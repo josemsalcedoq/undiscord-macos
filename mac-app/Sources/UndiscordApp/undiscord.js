@@ -570,6 +570,7 @@
     search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
     stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
     close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>',
+    openchat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>',
   };
 
   const CSS = `
@@ -634,6 +635,17 @@
     .undms-row.sel .undms-chk{background:var(--u-acc);border-color:var(--u-acc)}
     .undms-chk svg{width:12px;height:12px;color:#fff;opacity:0;stroke-width:3.5}
     .undms-row.sel .undms-chk svg{opacity:1}
+    .undms-open{flex:none;width:26px;height:26px;border-radius:7px;border:none;background:transparent;color:var(--u-dim);
+      display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .1s,color .1s}
+    .undms-open:hover{background:var(--u-acc);color:#fff}
+    .undms-open svg{width:15px;height:15px}
+    .undms-open[disabled]{opacity:.35;cursor:default}
+    .undms-toast{position:absolute;left:50%;bottom:16px;transform:translate(-50%,14px);max-width:86%;
+      background:#111214;color:#f2f3f5;border:1px solid var(--u-line);border-radius:10px;padding:10px 14px;font-size:12.5px;
+      box-shadow:0 8px 24px rgba(0,0,0,.45);opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;z-index:5;text-align:center}
+    .undms-toast.show{opacity:1;transform:translate(-50%,0)}
+    .undms-toast.err{border-color:#f04747}
+    .undms-toast.ok{border-color:var(--u-grn)}
     .undms-empty{padding:26px 16px;text-align:center;color:var(--u-dim);font-size:13px;line-height:1.5}
     .undms-empty small{display:block;margin:8px 0 4px;color:#72767d}
     .undms-imp-btn{margin-top:12px;background:var(--u-acc);color:#fff;border:none;border-radius:9px;padding:9px 16px;font-weight:600;cursor:pointer}
@@ -777,7 +789,7 @@
         label: c.label || `DM ${c.channelId}`,
         sub: `${(c.count || 0).toLocaleString()} messages · package`,
         count: c.count || (c.messageIds || []).length,
-        messageIds: c.messageIds || [], avatarUrl: null,
+        messageIds: c.messageIds || [], recipients: c.recipients || [], avatarUrl: null,
       })).sort((a, b) => b.count - a.count);
       tab = 'import';
       panel.querySelectorAll('.undms-tabs button').forEach((x) => x.classList.toggle('on', x.dataset.tab === 'import'));
@@ -812,10 +824,15 @@
         return;
       }
       for (const it of filtered) {
+        const canOpen = it.kind === 'import' && it.type === 1; // only 1-to-1 DMs can be reopened
+        const openBtn = it.kind === 'import'
+          ? `<button class="undms-open" data-open title="${canOpen ? 'Open this DM in Discord' : 'Only 1-to-1 DMs can be opened'}"${canOpen ? '' : ' disabled'}>${ICON.openchat}</button>`
+          : '';
         const row = h(`
           <label class="undms-row${it._sel ? ' sel' : ''}">
             ${avatarHtml(it, it.kind !== 'guild')}
             <div class="meta"><div class="l">${esc(it.label)}</div><div class="s">${esc(it.sub || '')}</div></div>
+            ${openBtn}
             <div class="cnt${it._count > 0 ? ' has' : ''}" data-cnt>${it._count !== undefined ? fmtCount(it._count) : ''}</div>
             <div class="undms-chk">${ICON_CHECK}</div>
           </label>`);
@@ -827,8 +844,38 @@
           row.classList.toggle('sel', it._sel);
           updateSummary();
         };
+        const ob = row.querySelector('[data-open]');
+        if (ob) ob.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openImportedDM(it, ob); };
         listEl.appendChild(row);
       }
+    }
+
+    // Toast: transient status message anchored to the panel (used by "Open DM").
+    let toastTimer = null;
+    function toast(msg, kind = '') {
+      let t = $('#undms-toast');
+      if (!t) { t = h('<div id="undms-toast" class="undms-toast"></div>'); panel.appendChild(t); }
+      t.textContent = msg;
+      t.className = `undms-toast show ${kind}`;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { t.className = `undms-toast ${kind}`; }, 3400);
+    }
+
+    // Reopen a closed 1-to-1 DM from an imported conversation. Discord's data package
+    // lists both participants in `recipients`; we open the DM with the other one via the
+    // same endpoint the DM tab uses. Success → it reappears in Discord's sidebar; any
+    // failure (blocked, no recipient, not a DM) → a toast, no navigation.
+    async function openImportedDM(it, btn) {
+      if (it.type !== 1) return toast('Only 1-to-1 DMs can be opened, not groups.', 'err');
+      const me = engine.options.authorId;
+      const other = (it.recipients || []).find((r) => r && r !== me) || (it.recipients || [])[0];
+      if (!other) return toast('Could not open — this conversation has no recipient in the package.', 'err');
+      if (!engine.options.authToken) return toast('Not connected to Discord yet.', 'err');
+      btn.disabled = true;
+      const cid = await engine.openDM(other);
+      btn.disabled = false;
+      if (cid) toast(`Opened “${it.label}” — it’s now in your Discord sidebar.`, 'ok');
+      else toast(`Couldn’t open “${it.label}” — they may have blocked you or the DM is unavailable.`, 'err');
     }
 
     const toJob = (it) =>

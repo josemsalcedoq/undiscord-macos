@@ -187,6 +187,20 @@ test('runBatch always reaches a terminal state and clears running on a search er
   assert.equal(lastPhase, 'done'); // UI driven to a terminal state, not frozen mid-delete
 });
 
+test('openDM returns the new channel id, or null when Discord refuses', async () => {
+  // Backs the Imported tab's "Open DM": success → reopened channel id, failure → null.
+  global.fetch = async (url, opts = {}) => {
+    if (String(url).endsWith('/users/@me/channels') && opts.method === 'POST') {
+      const body = JSON.parse(opts.body);
+      return body.recipients[0] === 'blocked' ? resp(403, { message: 'nope' }) : resp(200, { id: 'chan-987' });
+    }
+    return resp(200, {});
+  };
+  const e = newEngine();
+  assert.equal(await e.openDM('u1'), 'chan-987');
+  assert.equal(await e.openDM('blocked'), null);
+});
+
 // ---- engine: imported id-list deletion ------------------------------------
 test('imported target deletes by id list without searching', async () => {
   let searchCalls = 0, deleteCalls = 0;
