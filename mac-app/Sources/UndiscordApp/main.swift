@@ -51,6 +51,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+
+        // Show the changelog if we just updated, then quietly check for a newer release.
+        Updater.shared.showWhatsNewIfUpdated()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            Updater.shared.checkForUpdates(silent: true)
+        }
+    }
+
+    @objc func checkForUpdatesMenu() {
+        Updater.shared.checkForUpdates(silent: false)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -140,6 +150,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let appItem = NSMenuItem()
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdatesMenu), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Hide Undiscord", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit Undiscord", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")

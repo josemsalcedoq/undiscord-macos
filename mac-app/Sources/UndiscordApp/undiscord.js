@@ -435,12 +435,19 @@
       this.state = this._freshState();
       this.options.channelId = job.channelId || null;
       this.options.guildId = job.guildId;
-      let n = 0;
+      let n = -1; // -1 = still indexing
       try {
-        const res = await fetch(this._searchUrl(), { headers: { Authorization: this.options.authToken } });
-        if (res.status === 202) n = -1;
-        else if (res.ok) n = (await res.json()).total_results || 0;
-        else n = -2;
+        // A just-opened DM may not be indexed yet (202); retry a few times.
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const res = await fetch(this._searchUrl(), { headers: { Authorization: this.options.authToken } });
+          if (res.status === 202) {
+            const body = await res.json().catch(() => ({}));
+            await wait(body.retry_after ? body.retry_after * 1000 : 1200);
+            continue;
+          }
+          n = res.ok ? ((await res.json()).total_results || 0) : -2;
+          break;
+        }
       } catch (_) { n = -2; }
       this.state = save.st; this.options.channelId = save.ch; this.options.guildId = save.g;
       return n;
@@ -506,7 +513,7 @@
       color:var(--u-tx);outline:none}
     .undms-search input:focus{border-color:var(--u-acc)}
 
-    .undms-list{overflow-y:auto;flex:1;min-height:130px;padding:2px 8px 6px}
+    .undms-list{overflow-y:auto;flex:1 1 auto;min-height:84px;max-height:30vh;padding:2px 8px 6px}
     .undms-list::-webkit-scrollbar{width:8px}.undms-list::-webkit-scrollbar-thumb{background:#1a1b1e;border-radius:8px}
     .undms-row{display:flex;align-items:center;gap:11px;padding:8px 9px;border-radius:9px;cursor:pointer;transition:background .1s}
     .undms-row:hover{background:var(--u-hover)}
@@ -555,7 +562,7 @@
     .undms-prog .pl{display:flex;justify-content:space-between;font-size:11px;color:var(--u-dim);margin-bottom:5px}
     .undms-bar{height:7px;background:var(--u-bg3);border-radius:5px;overflow:hidden}
     .undms-bar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#5865f2,#2dc770);transition:width .25s}
-    .undms-log{margin:10px 8px 10px;background:var(--u-bg3);border-radius:9px;padding:9px;height:150px;overflow:auto;
+    .undms-log{margin:8px 8px 10px;background:var(--u-bg3);border-radius:9px;padding:9px;height:210px;overflow:auto;
       font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
     .undms-log::-webkit-scrollbar{width:8px}.undms-log::-webkit-scrollbar-thumb{background:#111;border-radius:8px}
     .undms-log .error{color:#f38688}.undms-log .warn{color:#e5c07b}.undms-log .success{color:#7bd88f}
@@ -754,7 +761,9 @@
       engine.log('info', `Scanning ${sel.length} target(s)…`);
       for (const it of sel) {
         it._count = -1; renderList(); updateSummary();
-        it._count = await engine.countTarget(toJob(it));
+        const job = toJob(it);
+        it._count = await engine.countTarget(job);
+        if (job.channelId && !it.channelId) it.channelId = job.channelId; // cache opened DM channel
         renderList(); updateSummary();
         await wait(700);
       }
