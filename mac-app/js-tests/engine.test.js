@@ -153,6 +153,40 @@ test('delete 404 is treated as already-deleted (counts as success)', async () =>
   assert.equal(e.state.delCount, 1);
 });
 
+test('final verification sweeps up an index-lag leftover without reconfirmation', async () => {
+  // Discord's search index lags behind deletes: the first sweep sees msg 1, deletes it,
+  // then gets an empty page (msg 2 not indexed yet) and stops. The verification pass must
+  // re-scan, find msg 2, and delete it — with no extra confirmation.
+  const pages = [
+    { total_results: 1, messages: [[hit('1')]] }, // sweep: msg 1
+    { total_results: 0, messages: [] },            // sweep: empty (lag) → stops
+    { total_results: 1, messages: [[hit('2')]] },  // verify: leftover msg 2 appears
+    { total_results: 0, messages: [] },            // verify's mop-up sweep: empty
+  ];
+  let deleteCalls = 0;
+  global.fetch = async (url, opts = {}) => {
+    if ((opts.method || 'GET') === 'DELETE') { deleteCalls++; return resp(204); }
+    return resp(200, pages.shift() || { total_results: 0, messages: [] });
+  };
+  const e = newEngine();
+  await e.runBatch([{ label: 'dm', channelId: 'c', guildId: '@me' }]);
+  assert.equal(e.state.delCount, 2); // msg 1 in the sweep, msg 2 caught by verification
+  assert.equal(deleteCalls, 2);
+});
+
+test('runBatch always reaches a terminal state and clears running on a search error', async () => {
+  global.fetch = async (url, opts = {}) => {
+    if (String(url).includes('/messages/search')) return resp(500); // hard failure
+    return resp(200, {});
+  };
+  const e = newEngine();
+  let lastPhase = null;
+  e.onProgress = (p) => { lastPhase = p.phase; };
+  await e.runBatch([{ label: 'dm', channelId: 'c', guildId: '@me' }]); // must not reject
+  assert.equal(e.running, false);
+  assert.equal(lastPhase, 'done'); // UI driven to a terminal state, not frozen mid-delete
+});
+
 // ---- engine: imported id-list deletion ------------------------------------
 test('imported target deletes by id list without searching', async () => {
   let searchCalls = 0, deleteCalls = 0;

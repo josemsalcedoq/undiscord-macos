@@ -196,6 +196,7 @@
         minId: null, maxId: null, // optional date-range snowflakes (from/to)
         searchDelay: 30000, deleteDelay: 1000,
         includePinned: false, maxAttempt: 2, debug: false,
+        maxVerify: 3, // final re-scan passes after a target looks done (catches index-lag leftovers)
       };
       this.state = this._freshState();
       this.stats = { throttledCount: 0, throttledTotalTime: 0, avgPing: 0, startTime: null };
@@ -276,40 +277,56 @@
       let grand = { del: 0, fail: 0 };
       this.log('info', `Starting batch of ${queue.length} target(s).`);
 
-      for (let i = 0; i < queue.length && this.running; i++) {
-        const job = queue[i];
-        this.state = this._freshState();
-        this.log('info', `\n[${i + 1}/${queue.length}] ${job.label}`);
+      try {
+        for (let i = 0; i < queue.length && this.running; i++) {
+          const job = queue[i];
+          this.state = this._freshState();
+          this.log('info', `\n[${i + 1}/${queue.length}] ${job.label}`);
 
-        // Imported (data-package) target: delete directly by message id, no search.
-        if (job.messageIds) {
-          if (this.onProgress) this.onProgress({ done: 0, total: job.messageIds.length, phase: 'target', target: job.label });
-          await this._runIdList(job);
+          // Imported (data-package) target: delete directly by message id, no search.
+          if (job.messageIds) {
+            if (this.onProgress) this.onProgress({ done: 0, total: job.messageIds.length, phase: 'target', target: job.label });
+            await this._runIdList(job);
+            grand.del += this.state.delCount;
+            grand.fail += this.state.failCount;
+            continue;
+          }
+
+          const cid = await this._resolveChannel(job);
+          if (job.guildId === '@me' && !cid) {
+            this.log('error', `Could not open a DM channel for ${job.label}; skipping.`);
+            continue;
+          }
+          this.options.channelId = job.channelId || null;
+          this.options.guildId = job.guildId;
+
+          if (this.onProgress) this.onProgress({ done: 0, total: 0, phase: 'target', target: job.label });
+          await this._runOne();
           grand.del += this.state.delCount;
           grand.fail += this.state.failCount;
-          continue;
         }
-
-        const cid = await this._resolveChannel(job);
-        if (job.guildId === '@me' && !cid) {
-          this.log('error', `Could not open a DM channel for ${job.label}; skipping.`);
-          continue;
-        }
-        this.options.channelId = job.channelId || null;
-        this.options.guildId = job.guildId;
-
-        if (this.onProgress) this.onProgress({ done: 0, total: 0, phase: 'target', target: job.label });
-        await this._runOne();
-        grand.del += this.state.delCount;
-        grand.fail += this.state.failCount;
+        this.log('success', `Batch finished. Deleted ${grand.del}, failed ${grand.fail}. Total time ${msToHMS(Date.now() - this.stats.startTime)}.`);
+      } catch (err) {
+        // A hard error (bad status / network) bubbles up here; log it instead of
+        // leaving the UI frozen on the last "Deleting…" state.
+        this.log('error', `Batch stopped early: ${err?.message || 'request failed'}. Deleted ${grand.del} before the error.`);
+      } finally {
+        // Always release the running flag and drive the UI to a terminal state, so
+        // the progress label never gets stuck mid-delete.
+        this.running = false;
+        if (this.onProgress) this.onProgress({ done: grand.del, total: grand.del, phase: 'done', target: '' });
       }
-
-      this.running = false;
-      this.log('success', `Batch finished. Deleted ${grand.del}, failed ${grand.fail}. Total time ${msToHMS(Date.now() - this.stats.startTime)}.`);
-      if (this.onProgress) this.onProgress({ done: grand.del, total: grand.del, phase: 'done', target: '' });
     }
 
     async _runOne() {
+      await this._sweep();
+      await this._verify();
+    }
+
+    // Search → delete loop for one target. Deleting removes messages from the result
+    // set, so offset stays at 0 while there are deletable hits; it only advances to
+    // step past messages we intentionally skip (system/pinned). Stops on an empty page.
+    async _sweep() {
       do {
         await this._search();
         if (!this.running) break;
@@ -324,6 +341,33 @@
         }
         await wait(this.options.searchDelay);
       } while (this.running);
+    }
+
+    // Final verification: Discord's search index lags behind deletes, so a sweep can
+    // stop on a transiently-empty page while messages still exist. Re-scan the same
+    // params a few times and delete anything left — no reconfirmation, the batch was
+    // already authorized. Any real leftover restarts the verification count.
+    async _verify() {
+      this.state.offset = 0;
+      for (let i = 0; i < this.options.maxVerify && this.running; i++) {
+        await wait(this.options.searchDelay);
+        if (this.onProgress) this.onProgress({ done: this.state.delCount, total: this.state.grandTotal, phase: 'verify', target: '' });
+        await this._search();
+        if (!this.running) return;
+        this._filter();
+
+        if (this.state._toDelete.length > 0) {
+          this.log('info', `Final check found ${this.state._toDelete.length} leftover message(s) — deleting.`);
+          await this._deleteList(); // delete what the re-scan surfaced…
+          await this._sweep();      // …then mop up any further pages
+          this.state.offset = 0;
+          i = -1; // real leftovers found: restart verification from scratch
+        } else if (this.state._skipped.length > 0) {
+          this.state.offset += this.state._skipped.length; // step past undeletable, keep checking
+        } else {
+          return; // clean page => confirmed done
+        }
+      }
     }
 
     _searchUrl() {
@@ -710,6 +754,7 @@
     };
     engine.onProgress = ({ done, total, phase, target }) => {
       if (phase === 'target') { $('#undms-plabel').textContent = 'Deleting: ' + target; }
+      else if (phase === 'verify') { $('#undms-plabel').textContent = 'Verifying — re-scanning for leftovers…'; }
       else if (phase === 'done') { $('#undms-plabel').textContent = `Done — deleted ${done}.`; $('#undms-ppct').textContent = ''; $('#undms-barfill').style.width = '100%'; return; }
       const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
       $('#undms-ppct').textContent = total ? `${done}/~${total}` : `${done}`;
