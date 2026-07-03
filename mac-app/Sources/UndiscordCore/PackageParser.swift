@@ -107,7 +107,7 @@ public enum PackageParser {
             guard isDir else { continue }
             guard let chData = try? Data(contentsOf: dir.appendingPathComponent("channel.json")),
                   let ch = (try? JSONSerialization.jsonObject(with: chData)) as? [String: Any] else { continue }
-            let type = (ch["type"] as? Int) ?? -1
+            let type = normalizeType(ch["type"])
             guard type == 1 || type == 3 else { continue }
             let id = (ch["id"] as? String) ?? (ch["id"].map { "\($0)" } ?? "")
             guard !id.isEmpty else { continue }
@@ -119,6 +119,24 @@ public enum PackageParser {
                                      recipients: recipients, messageIds: ids))
         }
         return out
+    }
+
+    /// Normalize a channel `type` to its API integer. Newer packages use strings
+    /// ("DM", "GROUP_DM", "GUILD_TEXT", …); older ones used the raw API integer.
+    public static func normalizeType(_ raw: Any?) -> Int {
+        if let i = raw as? Int { return i }
+        if let n = raw as? NSNumber { return n.intValue }
+        if let s = raw as? String {
+            switch s.uppercased() {
+            case "DM": return 1
+            case "GROUP_DM": return 3
+            case "GUILD_TEXT": return 0
+            case "GUILD_VOICE": return 2
+            case "GUILD_ANNOUNCEMENT": return 5
+            default: return Int(s) ?? -1 // tolerate a numeric string
+            }
+        }
+        return -1
     }
 
     /// Read message ids from messages.json (current format) or messages.csv (older).

@@ -111,6 +111,44 @@ final class PackageParserTests: XCTestCase {
         XCTAssertEqual(PackageParser.findMessagesDir(msgs)?.lastPathComponent, msgs.lastPathComponent)
     }
 
+    func testParseCurrentFormatStringTypesAndNumericIds() throws {
+        // Real 2024+ package: channel type is a string ("DM"/"GROUP_DM"/"GUILD_TEXT"),
+        // message IDs are JSON numbers (19-digit snowflakes), no index.json.
+        let fm = FileManager.default
+        let msgs = fm.temporaryDirectory.appendingPathComponent("Mensajes-\(UUID().uuidString)")
+        try fm.createDirectory(at: msgs, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: msgs) }
+
+        func makeChannel(_ id: String, _ type: String, ids: [Int64]) throws {
+            let dir = msgs.appendingPathComponent("c\(id)")
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: ["id": id, "type": type, "recipients": ["r1"]])
+                .write(to: dir.appendingPathComponent("channel.json"))
+            let arr = ids.map { ["ID": NSNumber(value: $0), "Timestamp": "2024", "Contents": "x"] }
+            try JSONSerialization.data(withJSONObject: arr).write(to: dir.appendingPathComponent("messages.json"))
+        }
+        try makeChannel("1245447521413890052", "DM", ids: [1253795966566535298])
+        try makeChannel("2000000000000000000", "GROUP_DM", ids: [3, 4])
+        try makeChannel("879733469452836864", "GUILD_TEXT", ids: [9]) // guild → excluded
+
+        let parsed = try PackageParser.parse(root: msgs).sorted { $0.channelId < $1.channelId }
+        XCTAssertEqual(parsed.count, 2)
+        XCTAssertEqual(parsed[0].type, 1)
+        XCTAssertEqual(parsed[0].messageIds, ["1253795966566535298"]) // 19-digit id kept exactly
+        XCTAssertEqual(parsed[1].type, 3)
+        XCTAssertEqual(parsed[1].messageIds, ["3", "4"])
+    }
+
+    func testNormalizeTypeAcceptsStringsAndInts() {
+        XCTAssertEqual(PackageParser.normalizeType("DM"), 1)
+        XCTAssertEqual(PackageParser.normalizeType("GROUP_DM"), 3)
+        XCTAssertEqual(PackageParser.normalizeType("GUILD_TEXT"), 0)
+        XCTAssertEqual(PackageParser.normalizeType(1), 1)
+        XCTAssertEqual(PackageParser.normalizeType(3), 3)
+        XCTAssertEqual(PackageParser.normalizeType("nope"), -1)
+        XCTAssertEqual(PackageParser.normalizeType(nil), -1)
+    }
+
     func testMissingMessagesIndexThrows() {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("empty-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
