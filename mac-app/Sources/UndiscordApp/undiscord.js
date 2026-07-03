@@ -1,22 +1,12 @@
-// ==UserScript==
-// @name         Undiscord Multiselect
-// @namespace    https://github.com/josemsalcedoq/undiscord-fork
-// @version      0.1.0
-// @description  Bulk-delete YOUR OWN Discord messages across DMs and servers, with checkbox multiselect discovery. Rate-limit engine ported from victornpb/undiscord.
-// @author       josemsalcedoq
-// @match        https://*.discord.com/*
-// @match        https://discord.com/*
-// @license      MIT
-// @grant        none
-// @run-at       document-idle
-// ==/UserScript==
-
 /*
- * WARNING: This uses your own account token to delete your own messages, exactly
- * like the original Undiscord (https://github.com/victornpb/undiscord). Automating
+ * Undiscord Multiselect — panel script injected by the native macOS app.
+ * Runs inside the app's Discord web view (WKUserScript). Renders a 🗑️ panel that
+ * discovers your DMs/servers, multiselect, and bulk-deletes YOUR OWN messages.
+ *
+ * WARNING: This uses your own account token to delete your own messages. Automating
  * a user account is against Discord's Terms of Service and can, in principle, get an
- * account actioned regardless of how slow you go. Use conservative delays. This is
- * for deleting YOUR OWN messages only.
+ * account actioned regardless of how slow you go. Use conservative delays. Rate-limit
+ * engine adapted from victornpb/undiscord. For deleting YOUR OWN messages only.
  */
 
 (function () {

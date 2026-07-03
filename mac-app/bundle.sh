@@ -3,25 +3,25 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-echo "==> Building release binary…"
+echo "==> Building release binary..."
 swift build -c release
 
 BIN=".build/release/UndiscordApp"
 RESBUNDLE=".build/release/UndiscordApp_UndiscordApp.bundle"
 APP="Undiscord.app"
 
-echo "==> Assembling $APP…"
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+echo "==> Assembling ${APP} ..."
+rm -rf "${APP}"
+mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 
-cp "$BIN" "$APP/Contents/MacOS/Undiscord"
+cp "${BIN}" "${APP}/Contents/MacOS/Undiscord"
 
 # The SwiftPM resource bundle (holds undiscord.js) must be findable by Bundle.module.
 # Put it where Bundle.main looks (Resources) and next to the executable, to be safe.
-cp -R "$RESBUNDLE" "$APP/Contents/Resources/"
-cp -R "$RESBUNDLE" "$APP/Contents/MacOS/"
+cp -R "${RESBUNDLE}" "${APP}/Contents/Resources/"
+cp -R "${RESBUNDLE}" "${APP}/Contents/MacOS/"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "${APP}/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -42,7 +42,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 # Ad-hoc code signature so macOS treats it as a stable app identity (no paid cert needed).
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 && echo "==> Ad-hoc signed." || echo "==> (codesign skipped)"
+if codesign --force --deep --sign - "${APP}" >/dev/null 2>&1; then
+  echo "==> Ad-hoc signed."
+else
+  echo "==> (codesign skipped)"
+fi
 
-echo "==> Done: $(pwd)/$APP"
-echo "    Launch with:  open $APP"
+echo "==> Done: $(pwd)/${APP}"
+echo "    Launch with:  open ${APP}"

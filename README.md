@@ -1,46 +1,53 @@
-# Undiscord Multiselect
+# Undiscord (native macOS app)
 
-A browser **userscript** that bulk-deletes **your own** Discord messages, with one thing the
-original [Undiscord](https://github.com/victornpb/undiscord) doesn't have: it **auto-discovers your
-DMs and servers and lets you multiselect them with checkboxes** — no manually pasting channel/guild IDs.
+A native **macOS app** that bulk-deletes **your own** Discord messages, with one thing the
+original [Undiscord](https://github.com/victornpb/undiscord) userscript doesn't have: it
+**auto-discovers your DMs and servers and lets you multiselect them with checkboxes** — no
+manually pasting channel/guild IDs, and no browser extension.
 
-It runs inside your logged-in Discord browser tab and reuses your existing session (your account
-token), which is the lowest-friction, lowest-fingerprint way to do this.
+The app is a self-contained window: it loads the Discord web client, you log in once (login
+persists), and it runs the deletion tool inside that real session — so the token grab works and
+it behaves like a normal client, while looking and launching like a native app.
+
+The app lives in [`mac-app/`](mac-app/).
 
 ## ⚠️ Read this first
 
-- This deletes **your own** messages using **your account token**, exactly like the original Undiscord.
+- Deletes **your own** messages using **your account token**, like the original Undiscord.
 - Automating a user account is **against Discord's Terms of Service** and can, in principle, get an
   account actioned — *independent of how slow you go*. The delays reduce rate-limit bans, not ToS risk.
 - Deletion is **permanent**. Use **Scan counts** and the confirmation dialog before running.
 - Only use this on your own account, for your own messages.
 
-## Two ways to run it
+## Requirements
+- macOS 12+
+- Swift toolchain (Xcode or Command Line Tools).
 
-- **Browser + userscript manager** (Tampermonkey/Violentmonkey) — steps below.
-- **Native macOS app, no extension** — see [`mac-app/`](mac-app/): `cd mac-app && swift run`. A self-contained
-  window that loads Discord and injects the same script. Same engine, same warnings.
+## Run it
+```sh
+cd mac-app
+swift run
+```
+A Discord window opens — **log in normally**. The 🗑️ panel appears bottom-right; login is
+remembered next launch.
 
-## Install (userscript)
+### Build a double-clickable app
+```sh
+cd mac-app
+./bundle.sh          # produces mac-app/Undiscord.app
+open Undiscord.app
+```
 
-1. Install a userscript manager: **Tampermonkey** or **Violentmonkey** (browser extension).
-2. Open `undiscord-multiselect.user.js` — the manager should offer to install it. (Or create a new
-   script and paste the file contents.)
-3. Go to `https://discord.com/app` (the web client, logged in). A **🗑️ button** appears bottom-right.
+## Using the panel
+1. Click **🗑️**. It auto-grabs your token + user id and loads your **DMs** and **Servers**.
+2. Pick a tab (Direct Messages / Servers), filter, and **check** the conversations to clean.
+3. *(Recommended)* **Scan counts** — shows how many of your messages are in each selected target.
+4. **Delete selected** → confirm. Watch the progress bar + log. **Stop** halts after the current message.
 
-## Use
+- A **DM/group** target deletes your messages in that conversation.
+- A **Server** target searches the whole server for messages authored by you and deletes across channels.
 
-1. Click the 🗑️ button. It auto-grabs your token + user id and loads your **DMs** and **Servers**.
-2. Switch tabs (Direct Messages / Servers), filter, and **check** the ones to clean.
-3. *(Optional)* **Scan counts** — shows how many of your messages are in each selected target.
-4. **Delete selected** → confirm. Watch progress + log. **Stop** halts after the current message.
-
-- **DM/group** targets delete your messages in that conversation.
-- **Server** targets search the whole server for messages authored by you and delete across channels.
-
-## Rate limiting (ported from the original Undiscord)
-
-Defaults are deliberately conservative:
+## Rate limiting (adapted from the original Undiscord)
 
 | Setting | Default | Purpose |
 |---|---|---|
@@ -48,15 +55,12 @@ Defaults are deliberately conservative:
 | Delete delay | **1000 ms** | between individual deletes |
 | Max attempts | 2 | per message |
 
-Adaptive backoff, matching upstream:
-- **Search `202`** (channel not indexed) → wait `retry_after`, retry.
-- **Search `429`** → permanently raise `searchDelay += retry_after`, then wait `2×` before retrying.
-- **Delete `429`** → set `deleteDelay = retry_after`, wait `2×`, retry.
-- **Delete `400` code 50083** (archived thread) → skip so it doesn't loop.
-
-You can raise the delays in the panel if you get rate-limited; lowering them increases ban risk.
+Adaptive backoff: search `202` (not indexed) → wait & retry; search `429` → permanently raise
+`searchDelay += retry_after`, wait `2×`; delete `429` → set `deleteDelay = retry_after`, wait `2×`;
+delete `400` code 50083 (archived thread) → skip. Raise the delays in the panel if you get
+rate-limited; lowering them increases ban risk.
 
 ## Credits
-
 Rate-limit engine, token-grab technique, and search/delete mechanics adapted from
-[victornpb/undiscord](https://github.com/victornpb/undiscord) (MIT). Multiselect discovery UI is new.
+[victornpb/undiscord](https://github.com/victornpb/undiscord) (MIT). Native app shell and
+multiselect discovery UI are new.

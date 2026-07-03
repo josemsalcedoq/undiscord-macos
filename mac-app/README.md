@@ -1,40 +1,39 @@
-# Undiscord — native macOS app (no Tampermonkey)
+# Undiscord — native macOS app
 
-A tiny macOS app that embeds a web view, loads the Discord web client, and auto-injects
-the Undiscord Multiselect script. It's a self-contained "mini browser with the tool built in" —
-no browser extension, no re-pasting, and your login persists between launches.
-
-Everything still runs inside a real logged-in Discord web session, so the safe token-grab
-behavior and rate-limit engine are identical to the userscript version.
+Self-contained macOS app: it embeds Discord's web client in a `WKWebView` and injects the
+Undiscord Multiselect panel. You log in inside the app once (login persists); the 🗑️ panel then
+discovers your DMs/servers for checkbox multiselect and bulk-deletes **your own** messages.
 
 ## Requirements
 - macOS 12+
-- Swift toolchain (Xcode or Command Line Tools) — you already have Swift 6.2.
+- Swift toolchain (Xcode or Command Line Tools).
 
-## Run it
+## Run (dev)
 ```sh
-cd mac-app
 swift run
 ```
-First launch opens a Discord window. **Log in normally.** Once the app loads, the 🗑️ panel
-appears bottom-right — same UI as the userscript. Login is remembered next time.
 
-## Build a double-clickable .app (optional)
-`swift run` is fine for personal use. To get a real app bundle:
+## Build a double-clickable app
 ```sh
-swift build -c release
+./bundle.sh          # -> Undiscord.app
+open Undiscord.app
 ```
-The binary lands in `.build/release/UndiscordApp`. Wrapping it into a proper `Undiscord.app`
-bundle (Info.plist + icon + code signing) is a follow-up if you want to launch it from Finder /
-distribute it — ask and I'll add a bundling script.
+`bundle.sh` compiles a release binary, assembles `Undiscord.app`, embeds the resource bundle, and
+ad-hoc code-signs it (no paid certificate needed). It's unsigned/un-notarized, so it's meant for
+your own machine — Gatekeeper won't complain about a locally built app you launch yourself.
 
 ## How it works
 - `WKWebViewConfiguration.websiteDataStore = .default()` → cookies/localStorage persist (stay logged in).
-- The script is injected as a `WKUserScript` at `.atDocumentEnd`. App-level injection is **not**
-  blocked by Discord's CSP (which is why a bookmarklet doesn't work but this does).
-- `Sources/UndiscordApp/undiscord.js` is a **copy** of the root `undiscord-multiselect.user.js`.
-  If you edit one, copy it to the other (or ask me to add a build step that syncs them).
+- The panel script (`Sources/UndiscordApp/undiscord.js`) is injected as a `WKUserScript` at
+  `.atDocumentEnd`. App-level injection is not subject to Discord's page CSP.
+- A minimal menu provides Cmd+Q and clipboard shortcuts so you can type/paste your Discord login.
 
-## Same warnings apply
+## Layout
+- `Sources/UndiscordApp/main.swift` — the app (window + web view + injection).
+- `Sources/UndiscordApp/undiscord.js` — the injected panel: discovery, multiselect UI, and the
+  rate-limited delete engine. Single source of truth.
+- `bundle.sh` — packages `Undiscord.app`.
+
+## Warnings
 Deletes **your own** messages using **your account token**. Automating a user account is against
 Discord's ToS regardless of speed. Keep the delays conservative. See the root `README.md`.
