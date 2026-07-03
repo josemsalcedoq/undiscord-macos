@@ -106,10 +106,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     // MARK: - Data Package import bridge
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "undms",
-              let body = message.body as? [String: Any],
-              (body["action"] as? String) == "import" else { return }
-        importDataPackage()
+        guard message.name == "undms", let body = message.body as? [String: Any] else { return }
+        switch body["action"] as? String {
+        case "import": importDataPackage()
+        case "saveLog": saveDebugLog(body["content"] as? String ?? "")
+        case "setInspectable": setInspectable((body["value"] as? Bool) ?? false)
+        default: break
+        }
+    }
+
+    // MARK: - Debug mode bridge
+
+    private func setInspectable(_ on: Bool) {
+        if #available(macOS 13.3, *) { webView.isInspectable = on }
+    }
+
+    private func saveDebugLog(_ content: String) {
+        let panel = NSSavePanel()
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyyMMdd-HHmmss"
+        panel.nameFieldStringValue = "undiscord-debug-\(stamp.string(from: Date())).log"
+        if let log = UTType(filenameExtension: "log") { panel.allowedContentTypes = [log, .plainText] }
+        panel.begin { resp in
+            guard resp == .OK, let url = panel.url else { return }
+            try? content.write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 
     @objc func importDataPackage() {

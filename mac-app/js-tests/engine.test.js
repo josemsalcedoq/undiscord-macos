@@ -3,7 +3,7 @@
 // Run with: node --test
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { Engine, mergeDMs, clampDelays, MIN_SEARCH_DELAY, MIN_DELETE_DELAY } =
+const { Engine, mergeDMs, clampDelays, MIN_SEARCH_DELAY, MIN_DELETE_DELAY, obfuscate } =
   require('../Sources/UndiscordApp/undiscord.js');
 
 // ---- helpers --------------------------------------------------------------
@@ -30,6 +30,36 @@ test('clampDelays enforces the minimum floors', () => {
   assert.deepEqual(clampDelays(10, 10), { searchDelay: MIN_SEARCH_DELAY, deleteDelay: MIN_DELETE_DELAY });
   assert.deepEqual(clampDelays(5000, 5000), { searchDelay: 5000, deleteDelay: 5000 });
   assert.deepEqual(clampDelays('', ''), { searchDelay: MIN_SEARCH_DELAY, deleteDelay: MIN_DELETE_DELAY });
+});
+
+test('obfuscate masks the middle of the token and keeps only the ends', () => {
+  const masked = obfuscate('abcd1234EFGH5678');
+  assert.ok(!masked.includes('1234EFGH'));
+  assert.ok(masked.startsWith('abcd'));
+  assert.ok(masked.endsWith('(16 chars)'));
+  assert.equal(obfuscate(''), '(none)');
+  assert.equal(obfuscate('short'), '********');
+});
+
+test('debug mode: the raw token is never written to the debug buffer', () => {
+  const e = new Engine();
+  e.onLog = () => {};
+  e.options.authToken = 'mfa.ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  e.log('info', `Authorization: ${e.options.authToken}`);
+  const last = e.debugBuffer[e.debugBuffer.length - 1];
+  assert.ok(!last.includes(e.options.authToken), 'raw token leaked into the buffer');
+  assert.ok(last.includes('mfa.'), 'obfuscated form should keep the first 4 chars');
+});
+
+test('debug() is a no-op unless debug mode is enabled', () => {
+  const e = new Engine();
+  e.onLog = () => {};
+  const before = e.debugBuffer.length;
+  e.debug('should not record');
+  assert.equal(e.debugBuffer.length, before);
+  e.options.debug = true;
+  e.debug('should record');
+  assert.equal(e.debugBuffer.length, before + 1);
 });
 
 test('mergeDMs prefers the open DM over the friend entry and keeps groups', () => {

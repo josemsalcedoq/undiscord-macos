@@ -24,6 +24,15 @@
     deleteDelay: Math.max(MIN_DELETE_DELAY, parseInt(del) || 0),
   });
 
+  // Debug helpers: obfuscate the auth token so it never appears in logs, and read
+  // response headers defensively (missing in tests / on network errors).
+  const obfuscate = (t) => {
+    if (!t) return '(none)';
+    const s = String(t);
+    return s.length <= 8 ? '********' : `${s.slice(0, 4)}…${s.slice(-4)} (${s.length} chars)`;
+  };
+  const H = (resp, name) => { try { return resp.headers?.get?.(name) ?? '?'; } catch (_) { return '?'; } };
+
   // ------------------------------------------------------------------ utils --
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const msToHMS = (ms) => {
@@ -173,13 +182,14 @@
       this.options = {
         authToken: null, authorId: null,
         searchDelay: 30000, deleteDelay: 1000,
-        includePinned: false, maxAttempt: 2,
+        includePinned: false, maxAttempt: 2, debug: false,
       };
       this.state = this._freshState();
       this.stats = { throttledCount: 0, throttledTotalTime: 0, avgPing: 0, startTime: null };
       this.running = false;
       this.onProgress = null;
       this.onLog = null;
+      this.debugBuffer = []; // captured log lines for export (token-scrubbed)
     }
 
     _freshState() {
@@ -187,23 +197,51 @@
     }
 
     log(level, ...args) {
-      if (this.onLog) this.onLog(level, args.join(' '));
-      console.log(PREFIX, ...args);
+      const msg = this._scrub(args.join(' '));
+      if (this.onLog) this.onLog(level, msg);
+      this._record(level, msg);
+      console.log(PREFIX, msg);
+    }
+
+    // Verbose request-level log; no-op unless debug mode is on.
+    debug(...args) {
+      if (!this.options.debug) return;
+      const msg = this._scrub(args.join(' '));
+      if (this.onLog) this.onLog('debug', msg);
+      this._record('debug', msg);
+      console.debug(PREFIX, msg);
+    }
+
+    // Never let the raw token reach a log/buffer/file (real tokens are long).
+    _scrub(s) {
+      const t = this.options.authToken;
+      if (t && t.length >= 10 && typeof s === 'string' && s.includes(t)) return s.split(t).join(obfuscate(t));
+      return s;
+    }
+
+    _record(level, msg) {
+      this.debugBuffer.push(`${new Date().toISOString()} [${level}] ${msg}`);
+      if (this.debugBuffer.length > 5000) this.debugBuffer.shift();
     }
 
     stop() { this.running = false; }
 
     // Open (or reuse) the DM channel for a user id.
     async openDM(userId) {
+      this.debug(`→ POST users/@me/channels {recipients:[${userId}]}`);
       try {
         const res = await fetch(`${API}/users/@me/channels`, {
           method: 'POST',
           headers: { Authorization: this.options.authToken, 'Content-Type': 'application/json' },
           body: JSON.stringify({ recipients: [userId] }),
         });
+        this.debug(`← ${res.status} openDM${res.ok ? '' : ' (failed)'}`);
         if (!res.ok) return null;
-        return (await res.json()).id;
-      } catch (_) {
+        const id = (await res.json()).id;
+        this.debug(`  opened channel ${id}`);
+        return id;
+      } catch (e) {
+        this.debug(`  openDM error: ${e.message}`);
         return null;
       }
     }
@@ -292,6 +330,7 @@
     async _search() {
       let resp;
       const t0 = Date.now();
+      this.debug(`→ SEARCH ${this._searchUrl()}`);
       try {
         resp = await fetch(this._searchUrl(), { headers: { Authorization: this.options.authToken } });
       } catch (err) {
@@ -300,11 +339,13 @@
         throw err;
       }
       this._ping(Date.now() - t0);
+      this.debug(`← ${resp.status} search ${Date.now() - t0}ms remaining=${H(resp, 'x-ratelimit-remaining')} reset=${H(resp, 'x-ratelimit-reset-after')}`);
 
       if (resp.status === 202) {
         let w = (await resp.json()).retry_after * 1000 || this.options.searchDelay;
         this.stats.throttledCount++;
         this.stats.throttledTotalTime += w;
+        this.debug(`  202 not indexed; waiting ${w}ms`);
         this.log('warn', `Channel not indexed yet. Waiting ${w}ms…`);
         await wait(w);
         return this._search();
@@ -379,6 +420,7 @@
       const url = `${API}/channels/${message.channel_id}/messages/${message.id}`;
       let resp;
       const t0 = Date.now();
+      this.debug(`→ DELETE channels/${message.channel_id}/messages/${message.id}`);
       try {
         resp = await fetch(url, { method: 'DELETE', headers: { Authorization: this.options.authToken } });
       } catch (err) {
@@ -387,6 +429,7 @@
         return 'FAILED';
       }
       this._ping(Date.now() - t0);
+      this.debug(`← ${resp.status} delete ${Date.now() - t0}ms remaining=${H(resp, 'x-ratelimit-remaining')} reset=${H(resp, 'x-ratelimit-reset-after')}`);
 
       if (!resp.ok) {
         if (resp.status === 404) { this.state.delCount++; return 'OK'; } // already deleted
@@ -439,7 +482,9 @@
       try {
         // A just-opened DM may not be indexed yet (202); retry a few times.
         for (let attempt = 0; attempt < 5; attempt++) {
+          this.debug(`→ COUNT[${attempt}] ${this._searchUrl()}`);
           const res = await fetch(this._searchUrl(), { headers: { Authorization: this.options.authToken } });
+          this.debug(`← ${res.status} count`);
           if (res.status === 202) {
             const body = await res.json().catch(() => ({}));
             await wait(body.retry_after ? body.retry_after * 1000 : 1200);
@@ -535,6 +580,10 @@
     .undms-imp-btn{margin-top:12px;background:var(--u-acc);color:#fff;border:none;border-radius:9px;padding:9px 16px;font-weight:600;cursor:pointer}
     .undms-imp-btn:hover{background:var(--u-acch)}
     .undms-optnote{padding:0 14px 12px;color:#e5c07b;font-size:11px;line-height:1.4}
+    .undms-dbgrow{display:flex;align-items:center;gap:8px;padding:0 14px 12px;flex-wrap:wrap}
+    .undms-dbgrow .lbl{color:var(--u-mut);font-size:11px}
+    .undms-dbgrow button{background:#2f3856;color:#c9d2ff;border:1px solid #3a4570;border-radius:7px;padding:6px 11px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit}
+    .undms-dbgrow button:hover{background:#3a4570}
 
     .undms-adv{border-top:1px solid var(--u-line)}
     .undms-adv summary{list-style:none;cursor:pointer;padding:9px 14px;color:var(--u-mut);font-size:12px;font-weight:600;user-select:none}
@@ -566,6 +615,7 @@
       font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
     .undms-log::-webkit-scrollbar{width:8px}.undms-log::-webkit-scrollbar-thumb{background:#111;border-radius:8px}
     .undms-log .error{color:#f38688}.undms-log .warn{color:#e5c07b}.undms-log .success{color:#7bd88f}
+    .undms-log .debug{color:#7f8ea3}
     .undms-log .deleted{color:var(--u-mut)}.undms-log .info{color:#89b4fa}.undms-log .verb{color:#6b7078}
     .undms-note{padding:9px 14px;color:#e5c07b;font-size:11px;background:var(--u-bg2);border-top:1px solid var(--u-line)}
   `;
@@ -602,8 +652,15 @@
             <label>Search delay (ms)<input type="number" id="undms-sd" value="30000" min="2000" step="100"></label>
             <label>Delete delay (ms)<input type="number" id="undms-dd" value="1000" min="700" step="50"></label>
             <label class="chk"><input type="checkbox" id="undms-pin"> include pinned</label>
+            <label class="chk"><input type="checkbox" id="undms-debug"> debug mode</label>
           </div>
           <div class="undms-optnote">Enforced minimums: search ≥ 2000ms, delete ≥ 700ms — going lower gets you rate-limited and risks a ban.</div>
+          <div class="undms-dbgrow" id="undms-dbgtools" style="display:none">
+            <span class="lbl">Debug log:</span>
+            <button id="undms-savelog">Save debug log…</button>
+            <button id="undms-copylog">Copy</button>
+            <button id="undms-clearlog">Clear</button>
+          </div>
         </details>
         <div class="undms-sum"><span id="undms-selinfo">0 selected</span><span id="undms-cntinfo"></span></div>
         <div class="undms-actions">
@@ -731,6 +788,40 @@
     });
     $('#undms-filter').oninput = renderList;
 
+    // ---- Debug mode ----
+    const nativeBridge = () => window.webkit?.messageHandlers?.undms;
+    function applyDebug(on, announce) {
+      engine.options.debug = on;
+      $('#undms-dbgtools').style.display = on ? 'flex' : 'none';
+      nativeBridge()?.postMessage({ action: 'setInspectable', value: on }); // enable Web Inspector
+      if (announce) {
+        engine.log(on ? 'warn' : 'info', on
+          ? 'Debug mode ON — verbose request logs. The token is shown obfuscated; message content and IDs are still logged, so review before sharing.'
+          : 'Debug mode off.');
+      }
+    }
+    (function initDebug() {
+      const saved = (() => { try { return localStorage.getItem('undms.debug') === '1'; } catch (_) { return false; } })();
+      $('#undms-debug').checked = saved;
+      applyDebug(saved, false);
+    })();
+    $('#undms-debug').onchange = (e) => {
+      const on = e.target.checked;
+      try { localStorage.setItem('undms.debug', on ? '1' : '0'); } catch (_) {}
+      applyDebug(on, true);
+    };
+    $('#undms-savelog').onclick = () => {
+      const content = engine.debugBuffer.join('\n') || '(empty)';
+      const b = nativeBridge();
+      if (b) b.postMessage({ action: 'saveLog', content });
+      else engine.log('error', 'Saving is only available inside the app.');
+    };
+    $('#undms-copylog').onclick = async () => {
+      try { await navigator.clipboard.writeText(engine.debugBuffer.join('\n')); engine.log('success', 'Debug log copied to clipboard.'); }
+      catch (_) { engine.log('warn', 'Copy failed — use “Save debug log…” instead.'); }
+    };
+    $('#undms-clearlog').onclick = () => { engine.debugBuffer.length = 0; engine.log('info', 'Debug buffer cleared.'); };
+
     function syncOpts() {
       const rawS = parseInt($('#undms-sd').value) || 0;
       const rawD = parseInt($('#undms-dd').value) || 0;
@@ -792,8 +883,10 @@
       TOKEN = getToken();
       if (!TOKEN) return engine.log('error', 'Could not read your token. Are you logged in to Discord?');
       engine.options.authToken = TOKEN;
+      engine.debug(`token grabbed: ${obfuscate(TOKEN)}`);
       ME = await getMe(TOKEN);
       engine.options.authorId = ME?.id || null;
+      engine.debug(`GET /users/@me → ${ME ? 'id ' + ME.id : 'failed'}`);
       if (ME) {
         $('#undms-who').textContent = ME.global_name || ME.username || `id ${ME.id}`;
         const av = userAvatar(ME.id, ME.avatar, 64);
@@ -804,9 +897,11 @@
       engine.log('success', `Connected as ${ME?.username || ME?.id || '(unknown)'}.`);
       try {
         engine.log('info', 'Loading DMs, friends and servers…');
+        engine.debug('→ GET users/@me/channels · users/@me/relationships · users/@me/guilds');
         const [open, friends, guilds] = await Promise.all([
           discoverDMs(TOKEN), discoverFriends(TOKEN), discoverGuilds(TOKEN),
         ]);
+        engine.debug(`← discovery: ${open.length} open channels, ${friends.length} friends, ${guilds.length} guilds`);
         DMS = mergeDMs(open, friends).sort((a, b) => a.label.localeCompare(b.label));
         GUILDS = guilds.sort((a, b) => a.label.localeCompare(b.label));
         const openCount = DMS.filter((d) => d.source === 'open').length;
@@ -829,6 +924,6 @@
 
   // Export the pure logic for Node-based unit tests (no-op in the web view).
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { Engine, mergeDMs, clampDelays, MIN_SEARCH_DELAY, MIN_DELETE_DELAY, userAvatar, guildIcon };
+    module.exports = { Engine, mergeDMs, clampDelays, MIN_SEARCH_DELAY, MIN_DELETE_DELAY, userAvatar, guildIcon, obfuscate };
   }
 })();
